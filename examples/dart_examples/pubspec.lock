@@ -53,10 +53,10 @@ packages:
     dependency: "direct main"
     description:
       name: collection
-      sha256: ee67cb0715911d28db6bf4af1026078bd6f0128b07a5f66fb2ed94ec6783c09a
+      sha256: a1ace0a119f20aabc852d165077c036cd864315bd99b7eaa10a60100341941bf
       url: "https://pub.dev"
     source: hosted
-    version: "1.18.0"
+    version: "1.19.0"
   convert:
     dependency: transitive
     description:
@@ -278,26 +278,24 @@ packages:
     source: path
     version: "5.3.0"
   signals_core:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: signals_core
-      sha256: "534843854cf805f0a9f58e47ab5c105fc8ef7f61c2f9a4cce6617adb503bc5b0"
-      url: "https://pub.dev"
-    source: hosted
-    version: "5.4.0"
+      path: "../../packages/signals_core"
+      relative: true
+    source: path
+    version: "5.3.0"
   signals_flutter:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: signals_flutter
-      sha256: d6adb1b4ece00191d1448187c2393ca82779fd59c70aa11c8d9af937286f06c7
-      url: "https://pub.dev"
-    source: hosted
-    version: "5.4.0"
+      path: "../../packages/signals_flutter"
+      relative: true
+    source: path
+    version: "5.3.0"
   sky_engine:
     dependency: transitive
     description: flutter
     source: sdk
-    version: "0.0.99"
+    version: "0.0.0"
   source_map_stack_trace:
     dependency: transitive
     description:
@@ -459,5 +457,4 @@ packages:
     source: hosted
     version: "3.1.2"
 sdks:
-  dart: ">=3.3.0 <4.0.0"
-  flutter: ">=1.17.0"
+  dart: ">=3.4.0 <4.0.0"

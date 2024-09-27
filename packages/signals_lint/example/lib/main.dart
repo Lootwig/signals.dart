@@ -35,6 +35,7 @@ class _MyHomePageState extends State<MyHomePage> with SignalsMixin {
     var counter3 = Counter(1);
     //final counterX = () => sameFileGetter;
     final counter2 = sameFileGetter;
+
     final third = counter3;
     final other = Counter(2).y;
     final nun = counter3.externalGetter;

@@ -4,15 +4,15 @@ import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
-import 'package:analyzer/dart/element/visitor.dart';
 import 'package:analyzer/error/error.dart' show ErrorSeverity;
 import 'package:analyzer/error/listener.dart';
+// ignore: implementation_imports
+import 'package:analyzer/src/dart/ast/utilities.dart';
+// ignore: implementation_imports
 import 'package:analyzer/src/dart/micro/utils.dart';
-import 'package:build/build.dart';
+import 'package:collection/collection.dart';
 import 'package:custom_lint_builder/custom_lint_builder.dart';
-import 'package:signals_lint/src/lints/definitions.dart';
 import 'package:signals_lint/src/lints/extensions.dart';
-import 'package:signals_lint/src/utils.dart';
 
 class DebugMessage extends LintCode {
   const DebugMessage(String message)
@@ -24,203 +24,191 @@ class DebugMessage extends LintCode {
 }
 
 class SignalsAvoidCreateInBuildMethod extends DartLintRule {
-  final visitor = SignalConstructorElementVisitor();
   final entryPoints = <Declaration>{};
 
-  SignalsAvoidCreateInBuildMethod() : super(code: lintCode);
+  SignalsAvoidCreateInBuildMethod() : super(code: const DebugMessage('pg'));
 
   @override
   Future<void> startUp(
-    CustomLintResolver resolver,
-    CustomLintContext context,
-  ) async {
+      CustomLintResolver resolver, CustomLintContext context) async {
+    final t = DateTime.now();
     super.startUp(resolver, context);
-    final unitResult = (await resolver.getResolvedUnitResult());
-    final analysisSession = unitResult.session;
-    final signalsLib = await analysisSession
-        .getLibraryByUri('package:signals/signals_flutter.dart');
-    final libraryElement = signalsLib.safeCast<LibraryElementResult>()?.element;
-    if (libraryElement != null) {
-      final resolved =
-          await analysisSession.getResolvedLibraryByElement(libraryElement);
-      if (resolved case ResolvedLibraryResult()) {
-        resolved.element.accept(visitor);
-        final collector = InvocationFinder(visitor.constructors);
+    final result = (await resolver.getResolvedUnitResult());
 
-        final resolvedLibs = await visitor.exportedLibs
-            .map((e) => analysisSession.getResolvedLibraryByElement(e))
-            .wait;
-        for (final u in resolvedLibs
-            .whereType<ResolvedLibraryResult>()
-            .expand((res) => res.units)) {
-          u.unit.root.accept(collector);
+    final session = result.session;
+    final lib =
+        (await session.getLibraryByUri('package:signals/signals_flutter.dart'));
+    if (lib is! LibraryElementResult) return;
+    final res = (await session.getResolvedLibraryByElement(lib.element));
+    if (res is! ResolvedLibraryResult) return;
+
+    final libs = <ResolvedLibraryResult>{};
+    Future<void> recurseExports(LibraryElement element) async {
+      final newItems = await element.libraryExports
+          .map((e) => e.exportedLibrary)
+          .nonNulls
+          .whereNot((l) => libs.map((lib) => lib.element).contains(l))
+          .map((l) => session.getResolvedLibraryByElement(l))
+          .wait;
+      final next = newItems.whereType<ResolvedLibraryResult>();
+      libs.addAll(next);
+      await next.map((r) => recurseExports(r.element)).wait;
+    }
+
+    await recurseExports(res.element);
+
+    final units = [res, ...libs].expand((e) => e.units).toList();
+    for (final node in [...units, result]) {
+      while (true) {
+        final hits = {...entryPoints};
+        final visitor = EntryPointVisitor(hits);
+        node.unit.declarations.accept(visitor);
+        if (hits.length > entryPoints.length) {
+          final bb = hits
+              .difference(entryPoints)
+              .where((n) =>
+                  n.declaredElement?.librarySource?.fullName.contains('p2') ??
+                  false)
+              .join('\n');
+          //if (bb.isNotEmpty) print('\nfound new refs: ${bb}');
+          entryPoints.addAll(hits);
+        } else {
+          break;
         }
-        entryPoints.addAll(collector.invocations
-                .map((i) => i.thisOrAncestorMatching<Declaration>((a) =>
-                    a is Declaration && (a.declaredElement?.isPublic ?? false)))
-                .nonNulls
-            //    .map((e) => e.declaredElement!.location)
-            );
-        print(entryPoints.map((ep) => ep).join('\n\n'));
-        print(visitor.constructors
-            .where((ep) => ep.displayName == 'Signal')
-            .map((c) => c.location)
-            .join('\n'));
       }
     }
+    final ms = (Duration(
+                milliseconds: DateTime.now().millisecondsSinceEpoch -
+                    t.millisecondsSinceEpoch)
+            .inMilliseconds /
+        1000);
+    print('that took ${ms.toStringAsFixed(3)}s');
   }
 
   @override
-  Future<void> run(
+  void run(
     CustomLintResolver resolver,
     ErrorReporter reporter,
     CustomLintContext context,
-  ) async {
-    int lineOf(AstNode node) =>
-        resolver.lineInfo.getLocation(node.offset).lineNumber;
-    void logOver(int o, int l, String message) {
-      reporter.atOffset(offset: o, length: l, errorCode: DebugMessage(message));
-    }
-
+  ) {
     void logAt(AstNode node, String message) {
       reporter.atNode(node, DebugMessage(message));
     }
 
-    //reporter.atOffset(offset: 44, length: 83, errorCode: lintCode);
+    final r = context.registry;
 
-    /*
-    final libraryElement =
-        (await resolver.getResolvedUnitResult()).libraryElement;
-    final f = BuildMethodFinder();
-    libraryElement.accept(f);*/
+    r.addInstanceCreationExpression(
+      (node) {
+        if (!node.withinBuild()) return;
+        final constructors = entryPoints
+            .whereType<ConstructorDeclaration>()
+            .map((e) => e.declaredElement?.returnType)
+            .nonNulls
+            .map(TypeChecker.fromStatic)
+            .toSet();
 
-    //print('i got ${entryPoints.length} points');
-    context.registry.addCompilationUnitMember((node) {
-      var directiveUris = node.parent
-          .safeCast<CompilationUnit>()
-          ?.declaredElement
-          ?.libraryImports
-          .map((i) => i.uri)
-          .whereType<DirectiveUriWithLibrary>()
-          .where((uri) => uri.library.name == signalsPackage);
-      if (directiveUris?.isEmpty ?? true) {
-        return;
-      }
-      void log(String message) => logAt(node, message);
-      //final refs = visitor.constructors.map(
-      if (node is ClassDeclaration) {
-        //print('${node.members}');
-        node.members
-            .whereType<Declaration>()
-            .expand((e) => e.childEntities)
-            .whereType<VariableDeclarationList>()
-            .expand((e) => e.variables)
-            .map((v) => v.initializer)
-            .whereType<InvocationExpression>()
-            .forEach((e) {
-          //final any = visitor.constructors
-          //    .any((c) => c == e.constructorName.staticElement);
-
-          //final sc = entryPoints.singleWhere(
-          //    (ep) => ep.declaredElement?.displayName == 'createSignal');
-
-          print('${e.function}');
-          //print('${e.constructorName.staticElement?.location == sc.location}');
-          //entryPoints.where((ep) => ep);
-        });
-      }
-      final refs = entryPoints.map((e) => e.declaredElement).map(
-        (constructor) {
-          //print('checking refs to ${constructor!}');
-          final collector = ReferencesCollector(constructor!);
-          node.accept(collector);
-          return collector.references.isEmpty
-              ? null
-              : (constructor.displayName, collector.references);
-        },
-      ).nonNulls;
-      if (refs.isNotEmpty) {
-        for (final (name, matches) in refs) {
-          for (final match in matches) {
-            //print('${match.offset} ${match.length}');
-            logOver(match.offset, match.length, "node references $name");
-          }
+        final calls = constructors
+            .where((checker) => checker.isExactlyType(node.staticType!))
+            .toSet();
+        if (calls.isNotEmpty) {
+          logAt(
+            node,
+            'Move this instantiation out of the build() method into the Widget\'s state.',
+          );
         }
-      }
-    });
-    //context.addPostRunCallback(() => print('$i members'));
+      },
+    );
+
+    r.addIdentifier(
+      (node) {
+        if (!node.withinBuild()) return;
+        final refs =
+            entryPoints.where((e) => e.declaredElement == node.staticElement);
+        if (refs.isNotEmpty) {
+          logAt(
+            node,
+            'This invocation causes a Signal to be instantiated (either directly or as a side-effect).',
+          );
+        }
+      },
+    );
   }
 }
 
-class InvocationFinder extends GeneralizingAstVisitor<void> {
-  final invocations = <AstNode>{};
-  final Set<ConstructorElement> targets;
-  final accessPoints = <AstNode>{};
+class EntryPointVisitor extends GeneralizingAstVisitor {
+  final Set<Declaration> entryPoints;
 
-  InvocationFinder(this.targets) {
-    print('${targets.map((t) => t.displayName).join(', ')}');
-  }
+  EntryPointVisitor(this.entryPoints);
 
   @override
-  void visitConstructorName(ConstructorName node) {
-    if (targets.contains(node.staticElement?.declaration)) {
-      invocations.add(node);
+  visitInvocationExpression(InvocationExpression node) {
+    if (entryPoints.any((e) {
+      return switch (node) {
+        MethodInvocation(:final methodName) =>
+          methodName.staticElement == e.declaredElement,
+        FunctionExpressionInvocation(:final staticElement) =>
+          staticElement == e.declaredElement,
+        _ => false,
+      };
+    })) {
+      final references = _findPublicReferences(node);
+      entryPoints.addAll(references);
     }
-    super.visitConstructorName(node);
+    return super.visitInvocationExpression(node);
   }
 
   @override
-  void visitInvocationExpression(InvocationExpression node) {
+  visitConstructorDeclaration(ConstructorDeclaration node) {
     if (node.isSignal) {
-      //print('invoking ${node}');
-      if (node.function case final SimpleIdentifier i) {}
+      entryPoints.add(node);
+      entryPoints.addAll(_findPublicReferences(node));
     }
-    super.visitInvocationExpression(node);
-  }
-}
-
-class BuildMethodFinder extends RecursiveElementVisitor<void> {
-  final buildMethodElements = <MethodElement>[];
-
-  @override
-  void visitMethodElement(MethodElement element) {
-    if (element.isWidgetBuildMethod()) {
-      buildMethodElements.add(element);
-    }
-    element.visitChildren(this);
-  }
-}
-
-class SignalConstructorElementVisitor extends GeneralizingElementVisitor<void> {
-  final constructors = <ConstructorElement>{};
-  final exportedLibs = <LibraryElement>{};
-
-  @override
-  void visitLibraryElement(LibraryElement element) {
-    exportedLibs.add(element);
-    element.library.exportedLibraries
-        .toSet()
-        .difference(exportedLibs)
-        .forEach(visitLibraryElement);
-    super.visitLibraryElement(element);
+    return super.visitConstructorDeclaration(node);
   }
 
   @override
-  void visitConstructorElement(ConstructorElement element) {
-    if (element.extendsSignal) {
-      constructors.add(element);
+  visitInstanceCreationExpression(InstanceCreationExpression node) {
+    if (node.staticType?.isSignal ?? false) {
+      entryPoints.addAll(_findPublicReferences(node));
     }
-    super.visitConstructorElement(element);
+    return super.visitInstanceCreationExpression(node);
   }
 }
 
-Future<AstNode?> findAstNodeForElement(Element element) async {
-  final libraryElement = element.library;
-  if (libraryElement == null) return null;
-  final parsedLibrary =
-      await element.session?.getResolvedLibraryByElement(libraryElement);
-  if (parsedLibrary is! ResolvedLibraryResult) return null;
+Set<Declaration> _findPublicReferences(AstNode node) {
+  final declarationParents = _getParents(node)
+      .whereType<Declaration>()
+      .where((d) => d.declaredElement is ExecutableElement);
+  final elements = declarationParents.mapNonNull((d) => d.declaredElement);
+  if (elements.every((e) => e.isPrivate)) {
+    final root = node.root;
+    for (final p in elements) {
+      final rc = ReferencesCollector(p);
+      root.accept(rc);
+      final refs = rc.references
+          .mapNonNull((r) => NodeLocator(r.offset).searchWithin(root));
+      return refs.expand((r) => _findPublicReferences(r)).toSet();
+    }
+  } else {
+    return declarationParents
+        .where((d) => d.declaredElement?.isPublic ?? false)
+        .toSet();
+  }
+  return {};
+}
 
-  final declaration = parsedLibrary.getElementDeclaration(element);
-  return declaration?.node;
+extension<T> on Iterable<T> {
+  Iterable<Out> mapNonNull<Out extends Object>(Out? Function(T t) f) {
+    return map(f).nonNulls;
+  }
+}
+
+List<AstNode> _getParents(AstNode node) {
+  final list = <AstNode>[];
+  AstNode? e = node;
+  while (e != null) {
+    list.add(e);
+    e = e.parent;
+  }
+  return list;
 }

@@ -1,3 +1,5 @@
+// ignore_for_file: deprecated_member_use
+
 part of 'signal_value_listenable.dart';
 
 /// [Signal] + [ValueNotifier]

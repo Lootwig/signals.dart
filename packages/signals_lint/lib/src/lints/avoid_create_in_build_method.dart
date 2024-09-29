@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:analyzer/dart/analysis/results.dart';
+import 'package:analyzer/dart/analysis/session.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
@@ -10,9 +11,11 @@ import 'package:analyzer/error/listener.dart';
 import 'package:analyzer/src/dart/ast/utilities.dart';
 // ignore: implementation_imports
 import 'package:analyzer/src/dart/micro/utils.dart';
-import 'package:collection/collection.dart';
 import 'package:custom_lint_builder/custom_lint_builder.dart';
+import 'package:signals/signals.dart';
 import 'package:signals_lint/src/lints/extensions.dart';
+import 'package:signals_lint/src/utils.dart';
+import 'package:stream_transform/stream_transform.dart';
 
 class DebugMessage extends LintCode {
   const DebugMessage(String message)
@@ -23,66 +26,89 @@ class DebugMessage extends LintCode {
         );
 }
 
+extension on Stopwatch {
+  String get format {
+    try {
+      return (elapsedMilliseconds / 1000).toStringAsFixed(3);
+    } finally {
+      reset();
+    }
+  }
+}
+
+extension<T> on Iterable<T> {
+  Iterable<T> whereNotIn(Iterable<T> other) =>
+      toSet().difference(other.toSet());
+}
+
+extension on AnalysisSession {
+  Stream<ResolvedLibraryResult> _recurseExports(
+    ResolvedLibraryResult resolvedResult, [
+    Set<ResolvedLibraryResult>? resolvedResults,
+  ]) {
+    final results = {resolvedResult, ...?resolvedResults};
+    final exports = resolvedResult.element.libraryExports
+        .mapNonNull((e) => e.exportedLibrary)
+        .whereNotIn(results.map((l) => l.element));
+    return Stream.fromIterable(exports)
+        .concurrentAsyncMap(getResolvedLibraryByElement)
+        .whereType<ResolvedLibraryResult>()
+        .concurrentAsyncExpand((result) async* {
+      yield result;
+      yield* _recurseExports(result, {result, ...results});
+    });
+  }
+
+  Future<ResolvedLibraryResult> _resolveFlutterSignalsLib() async {
+    final libraryPath = uriConverter
+        .uriToPath(Uri.parse('package:signals/signals_flutter.dart'));
+    if (libraryPath == null) {
+      throw Exception('Could not resolve signals_flutter library.');
+    }
+
+    final resolvedSignalsLibrary = await getResolvedLibrary(libraryPath)
+        .asyncCast<ResolvedLibraryResult>();
+    if (resolvedSignalsLibrary == null) {
+      throw Exception('Could not resolve signals_flutter library.');
+    }
+    return resolvedSignalsLibrary;
+  }
+}
+
 class SignalsAvoidCreateInBuildMethod extends DartLintRule {
-  final entryPoints = <Declaration>{};
+  final entryPoints = <Element>{};
 
   SignalsAvoidCreateInBuildMethod() : super(code: const DebugMessage('pg'));
 
   @override
   Future<void> startUp(
-      CustomLintResolver resolver, CustomLintContext context) async {
-    final t = DateTime.now();
-    super.startUp(resolver, context);
-    final result = (await resolver.getResolvedUnitResult());
+    CustomLintResolver resolver,
+    CustomLintContext context,
+  ) async {
+    await super.startUp(resolver, context);
+    final decodedFile = (await resolver.getResolvedUnitResult());
 
-    final session = result.session;
-    final lib =
-        (await session.getLibraryByUri('package:signals/signals_flutter.dart'));
-    if (lib is! LibraryElementResult) return;
-    final res = (await session.getResolvedLibraryByElement(lib.element));
-    if (res is! ResolvedLibraryResult) return;
+    final session = decodedFile.session;
+    final resolvedSignalsLibrary = await session._resolveFlutterSignalsLib();
 
-    final libs = <ResolvedLibraryResult>{};
-    Future<void> recurseExports(LibraryElement element) async {
-      final newItems = await element.libraryExports
-          .map((e) => e.exportedLibrary)
-          .nonNulls
-          .whereNot((l) => libs.map((lib) => lib.element).contains(l))
-          .map((l) => session.getResolvedLibraryByElement(l))
-          .wait;
-      final next = newItems.whereType<ResolvedLibraryResult>();
-      libs.addAll(next);
-      await next.map((r) => recurseExports(r.element)).wait;
-    }
+    final signalLibs =
+        await session._recurseExports(resolvedSignalsLibrary).toSet();
 
-    await recurseExports(res.element);
-
-    final units = [res, ...libs].expand((e) => e.units).toList();
-    for (final node in [...units, result]) {
-      while (true) {
-        final hits = {...entryPoints};
-        final visitor = EntryPointVisitor(hits);
+    final visitor = EntryPointVisitor(entryPoints);
+    final epSignal = entryPoints.toSignal();
+    final entryPointCount = epSignal
+        .select((set) => set.value.length)
+        .select((signal) => signal.value > (signal.previousValue ?? 0))
+      ..subscribe((_) => print('abc'));
+    for (final node in [
+      ...signalLibs.expand((e) => e.units),
+      decodedFile,
+    ]) {
+      do {
         node.unit.declarations.accept(visitor);
-        if (hits.length > entryPoints.length) {
-          final bb = hits
-              .difference(entryPoints)
-              .where((n) =>
-                  n.declaredElement?.librarySource?.fullName.contains('p2') ??
-                  false)
-              .join('\n');
-          //if (bb.isNotEmpty) print('\nfound new refs: ${bb}');
-          entryPoints.addAll(hits);
-        } else {
-          break;
-        }
-      }
+      } while (entryPointCount.value);
     }
-    final ms = (Duration(
-                milliseconds: DateTime.now().millisecondsSinceEpoch -
-                    t.millisecondsSinceEpoch)
-            .inMilliseconds /
-        1000);
-    print('that took ${ms.toStringAsFixed(3)}s');
+    epSignal.dispose();
   }
 
   @override
@@ -91,6 +117,7 @@ class SignalsAvoidCreateInBuildMethod extends DartLintRule {
     ErrorReporter reporter,
     CustomLintContext context,
   ) {
+    print('starting run');
     void logAt(AstNode node, String message) {
       reporter.atNode(node, DebugMessage(message));
     }
@@ -101,8 +128,8 @@ class SignalsAvoidCreateInBuildMethod extends DartLintRule {
       (node) {
         if (!node.withinBuild()) return;
         final constructors = entryPoints
-            .whereType<ConstructorDeclaration>()
-            .map((e) => e.declaredElement?.returnType)
+            .whereType<ConstructorElement>()
+            .map((e) => e.returnType)
             .nonNulls
             .map(TypeChecker.fromStatic)
             .toSet();
@@ -111,10 +138,14 @@ class SignalsAvoidCreateInBuildMethod extends DartLintRule {
             .where((checker) => checker.isExactlyType(node.staticType!))
             .toSet();
         if (calls.isNotEmpty) {
-          logAt(
-            node,
-            'Move this instantiation out of the build() method into the Widget\'s state.',
-          );
+          if (!node.staticType.isSignal) {
+            logAt(node,
+                'While not itself a signal, this class creates new signals on instantiation. Consider accessing an instance created outside the build.');
+          } else
+            logAt(
+              node,
+              'Move this instantiation out of the build() method into the Widget\'s state.',
+            );
         }
       },
     );
@@ -122,9 +153,7 @@ class SignalsAvoidCreateInBuildMethod extends DartLintRule {
     r.addIdentifier(
       (node) {
         if (!node.withinBuild()) return;
-        final refs =
-            entryPoints.where((e) => e.declaredElement == node.staticElement);
-        if (refs.isNotEmpty) {
+        if (entryPoints.contains(node.staticElement)) {
           logAt(
             node,
             'This invocation causes a Signal to be instantiated (either directly or as a side-effect).',
@@ -132,24 +161,26 @@ class SignalsAvoidCreateInBuildMethod extends DartLintRule {
         }
       },
     );
+
+    r.addPatternAssignment(
+      (node) {
+        print('found pattern at ${node.pattern.matchedValueType}');
+      },
+    );
   }
 }
 
-class EntryPointVisitor extends GeneralizingAstVisitor {
-  final Set<Declaration> entryPoints;
+class EntryPointVisitor extends GeneralizingAstVisitor<void> {
+  final Set<Element> entryPoints;
 
   EntryPointVisitor(this.entryPoints);
 
   @override
   visitInvocationExpression(InvocationExpression node) {
-    if (entryPoints.any((e) {
-      return switch (node) {
-        MethodInvocation(:final methodName) =>
-          methodName.staticElement == e.declaredElement,
-        FunctionExpressionInvocation(:final staticElement) =>
-          staticElement == e.declaredElement,
-        _ => false,
-      };
+    if (entryPoints.contains(switch (node) {
+      MethodInvocation(:final methodName) => methodName.staticElement,
+      FunctionExpressionInvocation(:final staticElement) => staticElement,
+      _ => null,
     })) {
       final references = _findPublicReferences(node);
       entryPoints.addAll(references);
@@ -159,8 +190,12 @@ class EntryPointVisitor extends GeneralizingAstVisitor {
 
   @override
   visitConstructorDeclaration(ConstructorDeclaration node) {
-    if (node.isSignal) {
-      entryPoints.add(node);
+    if (node
+        case ConstructorDeclaration(
+          isSignal: true,
+          declaredElement: != null && final element
+        )) {
+      entryPoints.add(element);
       entryPoints.addAll(_findPublicReferences(node));
     }
     return super.visitConstructorDeclaration(node);
@@ -173,28 +208,50 @@ class EntryPointVisitor extends GeneralizingAstVisitor {
     }
     return super.visitInstanceCreationExpression(node);
   }
-}
 
-Set<Declaration> _findPublicReferences(AstNode node) {
-  final declarationParents = _getParents(node)
-      .whereType<Declaration>()
-      .where((d) => d.declaredElement is ExecutableElement);
-  final elements = declarationParents.mapNonNull((d) => d.declaredElement);
-  if (elements.every((e) => e.isPrivate)) {
-    final root = node.root;
-    for (final p in elements) {
-      final rc = ReferencesCollector(p);
-      root.accept(rc);
-      final refs = rc.references
-          .mapNonNull((r) => NodeLocator(r.offset).searchWithin(root));
-      return refs.expand((r) => _findPublicReferences(r)).toSet();
+  @override
+  visitFieldDeclaration(FieldDeclaration node) {
+    final classDeclaration = node.parent.safeCast<ClassDeclaration>();
+    if (node.fields.variables
+            .mapNonNull((v) => v.initializer?.staticType?.isSignal)
+            .contains(true) &&
+        classDeclaration != null) {
+      final ClassDeclaration(:members, :declaredElement) = classDeclaration;
+      members
+          .whereType<ConstructorDeclaration>()
+          .mapNonNull((d) => d.declaredElement)
+        //..forEach((_) => print(node))
+        ..forEach(entryPoints.add);
+      if (declaredElement?.unnamedConstructor
+          case final Element unnamedConstructor) {
+        entryPoints.add(unnamedConstructor);
+      } else {
+        print('no unnamed for $node');
+      }
     }
-  } else {
-    return declarationParents
-        .where((d) => d.declaredElement?.isPublic ?? false)
-        .toSet();
+    return super.visitFieldDeclaration(node);
   }
-  return {};
+
+  Set<Element> _findPublicReferences(AstNode node) {
+    final declarations = _getParents(node)
+        .whereType<Declaration>()
+        .mapNonNull((d) => d.declaredElement)
+        .whereType<ExecutableElement>();
+
+    if (declarations.every((e) => e.isPrivate)) {
+      final root = node.root;
+      for (final privateElement in declarations) {
+        final collector = ReferencesCollector(privateElement);
+        root.accept(collector);
+        final refs = collector.references
+            .mapNonNull((r) => NodeLocator(r.offset).searchWithin(root));
+        return refs.expand(_findPublicReferences).toSet();
+      }
+    } else {
+      return {...declarations.where((element) => element.isPublic)};
+    }
+    return {};
+  }
 }
 
 extension<T> on Iterable<T> {

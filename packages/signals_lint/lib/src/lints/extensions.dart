@@ -17,12 +17,14 @@ extension AstNodeX on AstNode {
       false;
 }
 
-extension TypeX on DartType {
+extension TypeX on DartType? {
   bool get isSignal =>
-      signalTypes.any((checker) => checker.isAssignableFromType(this));
+      this != null &&
+      signalTypes.any((checker) => checker.isAssignableFromType(this!));
 
   bool isWidgetClass() =>
-      widgetClasses.any((checker) => checker.isAssignableFromType(this));
+      this != null &&
+      widgetClasses.any((checker) => checker.isAssignableFromType(this!));
 }
 
 extension CS on ConstructorDeclaration {

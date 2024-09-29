@@ -1,5 +1,5 @@
-import 'package:flutter/material.dart';
 import 'package:signals/signals_flutter.dart';
+import 'package:flutter/material.dart';
 
 //ignore_for_file: unused_local_variable
 void main() => runApp(const MyApp());
@@ -40,10 +40,15 @@ class _MyHomePageState extends State<MyHomePage> with SignalsMixin {
     final other = Counter(2).y;
     final nun = counter3.externalGetter;
     this.createSignal(123);
-    Signal(3);
+
+    Signal(33);
     final n = Signal(1);
     return Text('Count: $third $n');
   }
+}
+
+class NoConstructor {
+  final iCreateANewFieldWhenInstantiated = Signal(3);
 }
 
 class Counter extends ValueNotifier<int> {
@@ -56,7 +61,8 @@ class Counter extends ValueNotifier<int> {
 }
 
 class WithLateMapSignal {
-  late final signal = MapSignal({});
+  MapSignal get signal => MapSignal({});
+  //late final signal = MapSignal({});
 }
 
 extension on BuildContext {
@@ -68,7 +74,9 @@ class ReadingWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    context.read<WithLateMapSignal>().signal;
     final WithLateMapSignal(:signal) = context.read<WithLateMapSignal>();
+    Signal(33);
     return Column(
       children: [
         Watch(

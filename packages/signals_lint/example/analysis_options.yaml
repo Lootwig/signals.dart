@@ -32,4 +32,6 @@ analyzer:
     - custom_lint
 
 plugins:
-  custom_lint:
+  #custom_lint:
+
+

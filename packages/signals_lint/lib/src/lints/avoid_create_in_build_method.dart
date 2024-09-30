@@ -29,7 +29,7 @@ class DebugMessage extends LintCode {
 extension on Stopwatch {
   String get format {
     try {
-      return (elapsedMilliseconds / 1000).toStringAsFixed(3);
+      return (elapsedMilliseconds / 1_000).toStringAsFixed(3);
     } finally {
       reset();
     }
@@ -126,26 +126,27 @@ class SignalsAvoidCreateInBuildMethod extends DartLintRule {
 
     r.addInstanceCreationExpression(
       (node) {
-        if (!node.withinBuild()) return;
-        final constructors = entryPoints
+        if (!node.withinBuild() || node.isConst) return;
+        final typeCheckers = entryPoints
             .whereType<ConstructorElement>()
             .map((e) => e.returnType)
             .nonNulls
             .map(TypeChecker.fromStatic)
             .toSet();
 
-        final calls = constructors
+        final calls = typeCheckers
             .where((checker) => checker.isExactlyType(node.staticType!))
             .toSet();
         if (calls.isNotEmpty) {
           if (!node.staticType.isSignal) {
             logAt(node,
-                'While not itself a signal, this class creates new signals on instantiation. Consider accessing an instance created outside the build.');
-          } else
+                'While not itself a signal, this class creates new signals on instantiation. Consider accessing an instance created outside the build.',);
+          } else {
             logAt(
               node,
               'Move this instantiation out of the build() method into the Widget\'s state.',
             );
+          }
         }
       },
     );

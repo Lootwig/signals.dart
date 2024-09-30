@@ -33,11 +33,15 @@ class _MyHomePageState extends State<MyHomePage> with SignalsMixin {
   @override
   Widget build(BuildContext context) {
     var counter3 = Counter(1);
+
+    CanBeConst();
     //final counterX = () => sameFileGetter;
     final counter2 = sameFileGetter;
 
     final third = counter3;
+
     final other = Counter(2).y;
+
     final nun = counter3.externalGetter;
     this.createSignal(123);
 
@@ -67,6 +71,12 @@ class WithLateMapSignal {
 
 extension on BuildContext {
   T read<T>() => Object as T;
+}
+
+class CanBeConst {
+  const CanBeConst();
+
+  static final mySignal = Signal(3);
 }
 
 class ReadingWidget extends StatelessWidget {

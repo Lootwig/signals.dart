@@ -12,10 +12,10 @@ topics:
   - linter
 
 environment:
-  sdk: ^3.0.0
+  sdk: 3.6.0-216.1.beta
 
 dependencies:
-  analyzer: ^6.9.0
+  analyzer: ^6.8.0
   analyzer_plugin: ^0.11.3
   collection: ^1.19.0
   custom_lint_builder: ^0.6.5
